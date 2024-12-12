@@ -1,6 +1,11 @@
 import random
 import pandas as pd
 import os
+import shutil
+
+from script_read_bd_1C.setting import NAME_MK_DIRECTORY_WITH_PHOTO
+from setting import NAME_MK_DIRECTORY, NAME_FILE_XLSX
+
 
 
 def main():
@@ -36,16 +41,27 @@ def main():
         "Цена": [round(random.uniform(2500, 8000), 2) for _ in range(100)]
     }
 
+    directory = os.getcwd() + "/" + NAME_MK_DIRECTORY
 
-    name_directory ="/" + create_directory()
+    try:
+        shutil.rmtree(directory)
+        print(f"Директория {directory} и её содержимое успешно удалены или обновлены")
+    except FileNotFoundError:
+        print(f"Директория {directory} не найдена.")
+    except OSError as e:
+        print(f"Ошибка при удалении директории: {e}")
+
+    name_directory ="/" + create_directory(NAME_MK_DIRECTORY)
     df_large = pd.DataFrame(generated_data)
-    name_file = "/doors_info_large"
+    name_file = "/" + NAME_FILE_XLSX
     file_path_large = os.getcwd() + name_directory + name_file + ".xlsx"
     df_large.to_excel(file_path_large, index=False)
 
+    create_directory(NAME_MK_DIRECTORY_WITH_PHOTO)
 
-def create_directory():
-    name_directory = "Only_doors"
+
+def create_directory(name_dr):
+    name_directory = name_dr
     os.makedirs(name_directory, exist_ok=True)
     return name_directory
 
