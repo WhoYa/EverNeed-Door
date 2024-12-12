@@ -3,8 +3,7 @@ import pandas as pd
 import os
 import shutil
 
-from script_read_bd_1C.setting import NAME_MK_DIRECTORY_WITH_PHOTO
-from setting import NAME_MK_DIRECTORY, NAME_FILE_XLSX
+from setting import NAME_MK_DIRECTORY, NAME_FILE_XLSX, NAME_MK_DIRECTORY_WITH_PHOTO
 
 
 
