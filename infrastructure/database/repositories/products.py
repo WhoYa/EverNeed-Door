@@ -20,9 +20,9 @@ class ProductsRepo(BaseRepo):  # Переименовано с ProductRepo на 
 
     async def get_all_products(self) -> List[Product]:
         """
-        Retrieves all products from the database.
+        Retrieves all products from the database, sorted by product_id.
         """
-        stmt = select(Product)
+        stmt = select(Product).order_by(Product.product_id)
         result = await self.session.scalars(stmt)
         return result.all()
 
@@ -48,10 +48,35 @@ class ProductsRepo(BaseRepo):  # Переименовано с ProductRepo на 
         await self.session.commit()
         return result.first()
 
-    async def delete_product(self, product_id: int):
+    async def delete_product(self, product_id: int) -> bool:
         """
         Deletes a product by ID.
+        Returns True if the product was successfully deleted, False otherwise.
         """
-        stmt = delete(Product).where(Product.product_id == product_id)
-        await self.session.execute(stmt)
-        await self.session.commit()
+        try:
+            stmt = delete(Product).where(Product.product_id == product_id)
+            result = await self.session.execute(stmt)
+            await self.session.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.session.rollback()
+            return False
+            
+    async def update_product_field(self, product_id: int, field_name: str, field_value) -> bool:
+        """
+        Updates a single field of a product by ID.
+        Returns True if the product was successfully updated, False otherwise.
+        """
+        try:
+            update_data = {field_name: field_value}
+            stmt = (
+                update(Product)
+                .where(Product.product_id == product_id)
+                .values(**update_data)
+            )
+            result = await self.session.execute(stmt)
+            await self.session.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            await self.session.rollback()
+            return False

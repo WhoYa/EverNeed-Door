@@ -76,16 +76,21 @@ def order_details_keyboard(order_id: int) -> InlineKeyboardMarkup:
 @admin_orders_router.callback_query(F.data == "view_orders")
 async def view_orders_handler(callback: CallbackQuery, repo: RequestsRepo):
     """Показать первую страницу со списком заказов."""
+    # Просто отправляем новое сообщение вместо редактирования существующего
+    # Это самый надежный способ избежать ошибки "message is not modified"
+    
     orders = await repo.orders.get_all_orders()
     
     if not orders:
-        await callback.message.edit_text(
+        # Даже здесь не редактируем, а отправляем новое сообщение
+        await callback.message.delete()
+        await callback.message.answer(
             "На данный момент заказы отсутствуют.",
             reply_markup=main_menu_keyboard()
         )
         return
     
-    # Формируем текст
+    # Формируем текст 
     text_lines = ["Список заказов (стр. 1):\n"]
     for o in orders[:5]:  # только первые 5 для примера
         text_lines.append(f"- #{o.order_id}, пользователь: {o.user_id}, статус: {o.status}")
@@ -94,7 +99,9 @@ async def view_orders_handler(callback: CallbackQuery, repo: RequestsRepo):
     # Создаём клавиатуру для страницы 1
     keyboard = order_list_keyboard_paginated(orders, page=1, page_size=5)
     
-    await callback.message.edit_text(text_output, reply_markup=keyboard)
+    # Отправляем новое сообщение и удаляем старое
+    await callback.message.delete()
+    await callback.message.answer(text_output, reply_markup=keyboard)
 
 # Обработчик пагинации для списка заказов
 @admin_orders_router.callback_query(F.data.regexp(r"^view_orders_page_(\d+)$"))
@@ -123,7 +130,13 @@ async def view_orders_page_handler(callback: CallbackQuery, repo: RequestsRepo):
     # Генерируем клавиатуру для указанной страницы
     keyboard = order_list_keyboard_paginated(orders, page=page, page_size=page_size)
     
-    await callback.message.edit_text(text_output, reply_markup=keyboard)
+    # Отправляем новое сообщение и удаляем старое
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+        
+    await callback.message.answer(text_output, reply_markup=keyboard)
 
 # Обработчик для просмотра деталей заказа
 @admin_orders_router.callback_query(F.data.regexp(r"^order_(\d+)$"))

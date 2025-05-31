@@ -67,19 +67,19 @@ def product_list_keyboard_paginated(products, page: int = 1, page_size: int = 5)
 def confirmation_keyboard(product_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Да", callback_data=f"confirm_delete_{product_id}")
-    builder.button(text="Нет", callback_data="back_to_main_menu")
+    builder.button(text="Нет", callback_data=f"product_{product_id}")
     builder.adjust(2)
     return builder.as_markup()
 
-def edit_product_keyboard(product_name: str) -> InlineKeyboardMarkup:
+def edit_product_keyboard(product_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="Название", callback_data="edit_name")
-    builder.button(text="Описание", callback_data="edit_description")
-    builder.button(text="Тип", callback_data="edit_type")
-    builder.button(text="Материал", callback_data="edit_material")
-    builder.button(text="Цена", callback_data="edit_price")
-    builder.button(text="Фото", callback_data="edit_image_url")
-    builder.button(text="Назад", callback_data="back_to_main_menu")
+    builder.button(text="Название", callback_data=f"edit_name_{product_id}")
+    builder.button(text="Описание", callback_data=f"edit_description_{product_id}")
+    builder.button(text="Тип", callback_data=f"edit_type_{product_id}")
+    builder.button(text="Материал", callback_data=f"edit_material_{product_id}")
+    builder.button(text="Цена", callback_data=f"edit_price_{product_id}")
+    builder.button(text="Фото", callback_data=f"edit_image_url_{product_id}")
+    builder.button(text="Назад", callback_data=f"product_{product_id}")
     builder.adjust(1)
     return builder.as_markup()
 

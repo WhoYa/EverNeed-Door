@@ -10,4 +10,5 @@ def back_button_keyboard() -> InlineKeyboardMarkup:
             callback_data="go_back"
         )
     )
-    return builder.as_markup()
+    # Делаем кнопку оптимальной ширины, а не на всю ширину сообщения
+    return builder.as_markup(resize_keyboard=True, width=1)
