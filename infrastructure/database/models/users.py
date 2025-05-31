@@ -35,6 +35,17 @@ class User(Base, TimestampMixin, TableNameMixin):
     favorites: Mapped[List["Favorite"]] = relationship(
         "Favorite", back_populates="user", cascade="all, delete-orphan"
     )
+    reviews: Mapped[List["Review"]] = relationship(
+        "Review", back_populates="user", cascade="all, delete-orphan"
+    )
+    created_promotions: Mapped[List["Promotion"]] = relationship(
+        "Promotion", back_populates="creator", cascade="all, delete-orphan"
+    )
+    
+    # Отношения с подписками
+    subscriptions: Mapped[List["Subscription"]] = relationship(
+        "Subscription", back_populates="user", cascade="all, delete-orphan"
+    )
 
     def __repr__(self):
         return (

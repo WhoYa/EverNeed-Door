@@ -1,34 +1,56 @@
-from typing import Callable, Dict, Any, Awaitable
+from typing import Callable, Dict, Any, Awaitable, Optional
+import logging
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message
+from aiogram.types import TelegramObject, User as TelegramUser
 
 from infrastructure.database.repositories.requests import RequestsRepo
 
-
 class DatabaseMiddleware(BaseMiddleware):
     def __init__(self, session_pool) -> None:
+        super().__init__()
         self.session_pool = session_pool
+        self.logger = logging.getLogger(__name__)
 
     async def __call__(
         self,
-        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
-        event: Message,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        async with self.session_pool() as session:
-            repo = RequestsRepo(session)
+        # Extract Telegram user from event
+        from_user: Optional[TelegramUser] = getattr(event, "from_user", None)
+        if not from_user:
+            # Skip middleware for updates without user information
+            self.logger.debug("Skipping database middleware for update without user info")
+            return await handler(event, data)
 
-            user = await repo.users.get_or_create_user(
-                event.from_user.id,
-                event.from_user.full_name,
-                event.from_user.language_code,
-                event.from_user.username
-            )
+        try:
+            async with self.session_pool() as session:
+                repo = RequestsRepo(session)
 
-            data["session"] = session
-            data["repo"] = repo
-            data["user"] = user
+                # Get correctly typed user attributes
+                user_id = from_user.id
+                first_name = from_user.first_name
+                last_name = from_user.last_name or ""
+                username = from_user.username
 
-            result = await handler(event, data)
-        return result
+                # Create or get the user
+                user = await repo.users.get_or_create_user(
+                    user_id=user_id,
+                    first_name=first_name,
+                    last_name=last_name,
+                    username=username
+                )
+
+                # Add to handler data
+                data["session"] = session
+                data["repo"] = repo
+                data["user"] = user
+
+                # Execute handler
+                return await handler(event, data)
+        except Exception as e:
+            self.logger.error(f"Error in database middleware: {e}")
+            # Still try to handle the update even if database operations failed
+            return await handler(event, data)

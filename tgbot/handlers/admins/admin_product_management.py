@@ -1,7 +1,12 @@
 # tgbot/handlers/admin_product_management.py
+import logging
+import re
+from typing import Optional, Dict, Any, Union
+
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+
 from tgbot.keyboards.product_management import (
     product_management_keyboard,
     product_list_keyboard_paginated,
@@ -10,13 +15,21 @@ from tgbot.keyboards.product_management import (
     confirmation_keyboard
 )
 from tgbot.keyboards.back_button import back_button_keyboard
-from tgbot.misc.states import ProductManagement
-from tgbot.keyboards.admin_main_menu import main_menu_keyboard  # Импортируем основную клавиатуру
+from tgbot.keyboards.admin_main_menu import main_menu_keyboard
+from tgbot.misc.states import ProductManagement, ProductField
 from infrastructure.database.repositories.requests import RequestsRepo 
 from tgbot.filters.admin import AdminFilter
-import logging
-import re
 
+# Используем константы из перечисления ProductField
+PREVIOUS_STATE = ProductField.PREVIOUS_STATE
+EDIT_FIELD = ProductField.EDIT_FIELD
+PRODUCT_ID = ProductField.PRODUCT_ID
+NAME = ProductField.NAME
+DESCRIPTION = ProductField.DESCRIPTION
+TYPE = ProductField.TYPE
+MATERIAL = ProductField.MATERIAL
+PRICE = ProductField.PRICE
+IMAGE_URL = ProductField.IMAGE_URL
 
 admin_product_router = Router()
 
@@ -24,15 +37,51 @@ admin_product_router = Router()
 admin_product_router.message.filter(AdminFilter())
 admin_product_router.callback_query.filter(AdminFilter())
 
+
+def format_product_info(product) -> str:
+    """
+    Форматирует информацию о товаре для отображения пользователю.
+    
+    Args:
+        product: Объект товара с необходимыми атрибутами
+        
+    Returns:
+        str: Отформатированная строка с информацией о товаре
+    """
+    if hasattr(product, 'formatted_info') and callable(getattr(product, 'formatted_info')):
+        return product.formatted_info()
+    
+    # Запасной вариант, если метод не доступен
+    return (
+        f"📦 Информация о товаре:\n\n"
+        f"ID: {product.product_id}\n"
+        f"Название: {product.name}\n"
+        f"Описание: {product.description or 'Не указано'}\n"
+        f"Тип: {product.type or 'Не указан'}\n"
+        f"Материал: {product.material or 'Не указан'}\n"
+        f"Цена: {product.price}\n"
+    )
+
 @admin_product_router.callback_query(F.data == "manage_products")
 async def show_product_management_menu(callback: CallbackQuery):
     """
     Переход в меню управления товарами.
     """
-    await callback.message.edit_text(
-        "Выберите действие с товарами:",
-        reply_markup=product_management_keyboard()
-    )
+    try:
+        await callback.message.edit_text(
+            "Выберите действие с товарами:",
+            reply_markup=product_management_keyboard()
+        )
+        await callback.answer()
+    except Exception as e:
+        # If there's an error editing the message (e.g., message is too old),
+        # send a new message instead
+        logging.error(f"Error editing message: {e}")
+        await callback.message.answer(
+            "Выберите действие с товарами:",
+            reply_markup=product_management_keyboard()
+        )
+        await callback.answer()
 
 @admin_product_router.callback_query(F.data == "view_products")
 async def view_products_handler(callback: CallbackQuery, repo: RequestsRepo):
@@ -144,26 +193,27 @@ async def view_product_details(callback: CallbackQuery, repo: RequestsRepo):
         await callback.answer("Товар не найден.", show_alert=True)
         return
     
-    # Формируем текст с детальной информацией о товаре
-    text = (
-        f"📦 Информация о товаре:\n\n"
-        f"ID: {product.product_id}\n"
-        f"Название: {product.name}\n"
-        f"Описание: {product.description}\n"
-        f"Тип: {product.type}\n"
-        f"Материал: {product.material}\n"
-        f"Цена: {product.price}\n"
-    )
+    # Используем функцию форматирования информации о товаре
+    text = format_product_info(product)
     
     # Если у товара есть изображение, отправляем его 
-    if product.image_url:
-        await callback.message.answer_photo(
-            photo=product.image_url,
-            caption=text,
-            reply_markup=product_details_keyboard(product_id)
-        )
-        # Удаляем предыдущее сообщение
-        await callback.message.delete()
+    image_url = getattr(product, 'image_url', None)
+    if image_url:
+        try:
+            await callback.message.answer_photo(
+                photo=image_url,
+                caption=text,
+                reply_markup=product_details_keyboard(product_id)
+            )
+            # Удаляем предыдущее сообщение
+            await callback.message.delete()
+        except Exception as e:
+            logging.error(f"Error sending product photo: {e}")
+            # Fallback to text message if photo can't be sent
+            await callback.message.edit_text(
+                text,
+                reply_markup=product_details_keyboard(product_id)
+            )
     else:
         await callback.message.edit_text(
             text,
@@ -292,176 +342,140 @@ async def confirm_delete_product(callback: CallbackQuery, repo: RequestsRepo):
     else:
         await callback.answer("Ошибка при удалении товара. Попробуйте снова.", show_alert=True)
 
-@admin_product_router.callback_query(F.data.regexp(r"^edit_name_(\d+)$"))
-async def edit_product_name(callback: CallbackQuery, state: FSMContext, repo: RequestsRepo):
+@admin_product_router.callback_query(F.data.regexp(r"^edit_(\w+)_(\d+)$"))
+async def edit_product_field(callback: CallbackQuery, state: FSMContext, repo: RequestsRepo):
     """
-    Обработчик изменения названия товара.
+    Универсальный обработчик изменения полей товара.
+    
+    Поддерживает редактирование следующих полей:
+    - name: название товара
+    - description: описание товара
+    - type: тип товара
+    - material: материал товара
+    - price: цена товара
+    - image_url: изображение товара
     """
-    match = re.match(r"^edit_name_(\d+)$", callback.data)
+    match = re.match(r"^edit_(\w+)_(\d+)$", callback.data)
     if not match:
         return
     
-    product_id = int(match.group(1))
+    field_name, product_id_str = match.groups()
+    product_id = int(product_id_str)
     product = await repo.products.get_product_by_id(product_id)
     
     if not product:
         await callback.answer("Товар не найден.", show_alert=True)
         return
     
-    await state.update_data(product_id=product_id, edit_field="name", previous_state="editing_product")
+    # Словарь соответствия полей и их человекочитаемых названий
+    field_titles = {
+        "name": "название",
+        "description": "описание",
+        "type": "тип",
+        "material": "материал",
+        "price": "цену",
+        "image_url": "изображение"
+    }
+    
+    # Определяем название поля для сообщения пользователю
+    if field_name not in field_titles:
+        logging.error(f"Неизвестное поле для редактирования: {field_name}")
+        await callback.answer("Операция не поддерживается.", show_alert=True)
+        return
+    
+    field_title = field_titles[field_name]
+    current_value = getattr(product, field_name, "")
+    
+    # Сохраняем данные для последующего обновления
+    await state.update_data(
+        product_id=product_id, 
+        edit_field=field_name, 
+        previous_state=PREVIOUS_STATE
+    )
+    
+    # Формируем сообщение в зависимости от типа поля
+    if field_name == "image_url":
+        message_text = f"Прикрепите новое изображение товара:"
+    else:
+        message_text = f"Текущее {field_title}: {current_value}\n\nВведите новое {field_title} товара:"
+    
+    # Отправляем сообщение и устанавливаем соответствующее состояние
     await callback.message.edit_text(
-        f"Текущее название: {product.name}\n\nВведите новое название товара:",
+        message_text,
         reply_markup=back_button_keyboard()
     )
-    await state.set_state(ProductManagement.name)
+    
+    # Устанавливаем соответствующее состояние FSM
+    field_state = getattr(ProductManagement, field_name, None)
+    if field_state:
+        await state.set_state(field_state)
+    else:
+        logging.error(f"Не найдено состояние для поля {field_name}")
+        await callback.answer("Произошла ошибка. Попробуйте еще раз.", show_alert=True)
 
-@admin_product_router.callback_query(F.data.regexp(r"^edit_description_(\d+)$"))
-async def edit_product_description(callback: CallbackQuery, state: FSMContext, repo: RequestsRepo):
+# Универсальная функция для обработки обновления текстовых полей товара
+async def process_field_update(message: Message, state: FSMContext, repo: RequestsRepo, field_name: str, field_value: Any) -> bool:
     """
-    Обработчик изменения описания товара.
-    """
-    match = re.match(r"^edit_description_(\d+)$", callback.data)
-    if not match:
-        return
+    Универсальная функция для обновления полей товара.
     
-    product_id = int(match.group(1))
-    product = await repo.products.get_product_by_id(product_id)
-    
-    if not product:
-        await callback.answer("Товар не найден.", show_alert=True)
-        return
-    
-    await state.update_data(product_id=product_id, edit_field="description", previous_state="editing_product")
-    await callback.message.edit_text(
-        f"Текущее описание: {product.description}\n\nВведите новое описание товара:",
-        reply_markup=back_button_keyboard()
-    )
-    await state.set_state(ProductManagement.description)
-
-@admin_product_router.callback_query(F.data.regexp(r"^edit_type_(\d+)$"))
-async def edit_product_type(callback: CallbackQuery, state: FSMContext, repo: RequestsRepo):
-    """
-    Обработчик изменения типа товара.
-    """
-    match = re.match(r"^edit_type_(\d+)$", callback.data)
-    if not match:
-        return
-    
-    product_id = int(match.group(1))
-    product = await repo.products.get_product_by_id(product_id)
-    
-    if not product:
-        await callback.answer("Товар не найден.", show_alert=True)
-        return
-    
-    await state.update_data(product_id=product_id, edit_field="type", previous_state="editing_product")
-    await callback.message.edit_text(
-        f"Текущий тип: {product.type}\n\nВведите новый тип товара:",
-        reply_markup=back_button_keyboard()
-    )
-    await state.set_state(ProductManagement.type)
-
-@admin_product_router.callback_query(F.data.regexp(r"^edit_material_(\d+)$"))
-async def edit_product_material(callback: CallbackQuery, state: FSMContext, repo: RequestsRepo):
-    """
-    Обработчик изменения материала товара.
-    """
-    match = re.match(r"^edit_material_(\d+)$", callback.data)
-    if not match:
-        return
-    
-    product_id = int(match.group(1))
-    product = await repo.products.get_product_by_id(product_id)
-    
-    if not product:
-        await callback.answer("Товар не найден.", show_alert=True)
-        return
-    
-    await state.update_data(product_id=product_id, edit_field="material", previous_state="editing_product")
-    await callback.message.edit_text(
-        f"Текущий материал: {product.material}\n\nВведите новый материал товара:",
-        reply_markup=back_button_keyboard()
-    )
-    await state.set_state(ProductManagement.material)
-
-@admin_product_router.callback_query(F.data.regexp(r"^edit_price_(\d+)$"))
-async def edit_product_price(callback: CallbackQuery, state: FSMContext, repo: RequestsRepo):
-    """
-    Обработчик изменения цены товара.
-    """
-    match = re.match(r"^edit_price_(\d+)$", callback.data)
-    if not match:
-        return
-    
-    product_id = int(match.group(1))
-    product = await repo.products.get_product_by_id(product_id)
-    
-    if not product:
-        await callback.answer("Товар не найден.", show_alert=True)
-        return
-    
-    await state.update_data(product_id=product_id, edit_field="price", previous_state="editing_product")
-    await callback.message.edit_text(
-        f"Текущая цена: {product.price}\n\nВведите новую цену товара:",
-        reply_markup=back_button_keyboard()
-    )
-    await state.set_state(ProductManagement.price)
-
-@admin_product_router.callback_query(F.data.regexp(r"^edit_image_url_(\d+)$"))
-async def edit_product_image(callback: CallbackQuery, state: FSMContext, repo: RequestsRepo):
-    """
-    Обработчик изменения изображения товара.
-    """
-    match = re.match(r"^edit_image_url_(\d+)$", callback.data)
-    if not match:
-        return
-    
-    product_id = int(match.group(1))
-    product = await repo.products.get_product_by_id(product_id)
-    
-    if not product:
-        await callback.answer("Товар не найден.", show_alert=True)
-        return
-    
-    await state.update_data(product_id=product_id, edit_field="image_url", previous_state="editing_product")
-    await callback.message.edit_text(
-        f"Прикрепите новое изображение товара:",
-        reply_markup=back_button_keyboard()
-    )
-    await state.set_state(ProductManagement.image_url)
-
-# Обработчики для получения новых значений полей товара
-@admin_product_router.message(ProductManagement.name)
-async def process_new_name(message: Message, state: FSMContext, repo: RequestsRepo):
-    """
-    Обработчик ввода нового названия товара.
+    Args:
+        message: Telegram-сообщение пользователя
+        state: Состояние FSM
+        repo: Репозиторий для работы с базой данных
+        field_name: Имя поля для обновления
+        field_value: Новое значение поля
+        
+    Returns:
+        bool: True если обновление прошло успешно, False в противном случае
     """
     data = await state.get_data()
-    edit_field = data.get("edit_field")
-    product_id = data.get("product_id")
+    product_id = data.get(PRODUCT_ID)
     
-    if edit_field == "name" and product_id:
-        # Обновляем название товара
-        success = await repo.products.update_product_field(product_id, "name", message.text)
+    if not product_id:
+        logging.error("process_field_update: product_id не найден в данных FSM")
+        await message.answer("Ошибка при обновлении товара: отсутствует идентификатор.")
+        return False
+    
+    # Обновляем поле товара
+    try:
+        success = await repo.products.update_product_field(product_id, field_name, field_value)
         
         if success:
             product = await repo.products.get_product_by_id(product_id)
-            await message.answer(f"Название товара успешно изменено на: {message.text}")
+            field_titles = {
+                "name": "Название",
+                "description": "Описание",
+                "type": "Тип",
+                "material": "Материал",
+                "price": "Цена",
+                "image_url": "Изображение"
+            }
+            
+            field_title = field_titles.get(field_name, field_name.capitalize())
+            await message.answer(f"{field_title} товара успешно изменено.")
             
             # Возвращаемся к просмотру товара
+            product_info = format_product_info(product)
             await message.answer(
-                f"📦 Информация о товаре:\n\n"
-                f"ID: {product.product_id}\n"
-                f"Название: {product.name}\n"
-                f"Описание: {product.description}\n"
-                f"Тип: {product.type}\n"
-                f"Материал: {product.material}\n"
-                f"Цена: {product.price}\n",
+                product_info,
                 reply_markup=product_details_keyboard(product_id)
             )
+            return True
         else:
-            await message.answer("Ошибка при обновлении названия товара. Попробуйте снова.")
-    
+            await message.answer(f"Ошибка при обновлении поля {field_name} товара. Попробуйте снова.")
+            return False
+    except Exception as e:
+        logging.error(f"Ошибка при обновлении поля {field_name} товара: {e}")
+        await message.answer(f"Произошла ошибка при обновлении товара: {e}")
+        return False
+        
+# Обработчик для редактирования имени товара
+@admin_product_router.message(ProductManagement.name)
+async def process_new_name(message: Message, state: FSMContext, repo: RequestsRepo):
+    """
+    Обработчик ввода нового названия товара при редактировании.
+    """
+    await process_field_update(message, state, repo, NAME, message.text)
     await state.clear()
 
 @admin_product_router.message(ProductManagement.description)
@@ -469,32 +483,7 @@ async def process_new_description(message: Message, state: FSMContext, repo: Req
     """
     Обработчик ввода нового описания товара.
     """
-    data = await state.get_data()
-    edit_field = data.get("edit_field")
-    product_id = data.get("product_id")
-    
-    if edit_field == "description" and product_id:
-        # Обновляем описание товара
-        success = await repo.products.update_product_field(product_id, "description", message.text)
-        
-        if success:
-            product = await repo.products.get_product_by_id(product_id)
-            await message.answer(f"Описание товара успешно изменено.")
-            
-            # Возвращаемся к просмотру товара
-            await message.answer(
-                f"📦 Информация о товаре:\n\n"
-                f"ID: {product.product_id}\n"
-                f"Название: {product.name}\n"
-                f"Описание: {product.description}\n"
-                f"Тип: {product.type}\n"
-                f"Материал: {product.material}\n"
-                f"Цена: {product.price}\n",
-                reply_markup=product_details_keyboard(product_id)
-            )
-        else:
-            await message.answer("Ошибка при обновлении описания товара. Попробуйте снова.")
-    
+    await process_field_update(message, state, repo, DESCRIPTION, message.text)
     await state.clear()
 
 @admin_product_router.message(ProductManagement.type)
@@ -502,32 +491,7 @@ async def process_new_type(message: Message, state: FSMContext, repo: RequestsRe
     """
     Обработчик ввода нового типа товара.
     """
-    data = await state.get_data()
-    edit_field = data.get("edit_field")
-    product_id = data.get("product_id")
-    
-    if edit_field == "type" and product_id:
-        # Обновляем тип товара
-        success = await repo.products.update_product_field(product_id, "type", message.text)
-        
-        if success:
-            product = await repo.products.get_product_by_id(product_id)
-            await message.answer(f"Тип товара успешно изменен на: {message.text}")
-            
-            # Возвращаемся к просмотру товара
-            await message.answer(
-                f"📦 Информация о товаре:\n\n"
-                f"ID: {product.product_id}\n"
-                f"Название: {product.name}\n"
-                f"Описание: {product.description}\n"
-                f"Тип: {product.type}\n"
-                f"Материал: {product.material}\n"
-                f"Цена: {product.price}\n",
-                reply_markup=product_details_keyboard(product_id)
-            )
-        else:
-            await message.answer("Ошибка при обновлении типа товара. Попробуйте снова.")
-    
+    await process_field_update(message, state, repo, TYPE, message.text)
     await state.clear()
 
 @admin_product_router.message(ProductManagement.material)
@@ -535,32 +499,7 @@ async def process_new_material(message: Message, state: FSMContext, repo: Reques
     """
     Обработчик ввода нового материала товара.
     """
-    data = await state.get_data()
-    edit_field = data.get("edit_field")
-    product_id = data.get("product_id")
-    
-    if edit_field == "material" and product_id:
-        # Обновляем материал товара
-        success = await repo.products.update_product_field(product_id, "material", message.text)
-        
-        if success:
-            product = await repo.products.get_product_by_id(product_id)
-            await message.answer(f"Материал товара успешно изменен на: {message.text}")
-            
-            # Возвращаемся к просмотру товара
-            await message.answer(
-                f"📦 Информация о товаре:\n\n"
-                f"ID: {product.product_id}\n"
-                f"Название: {product.name}\n"
-                f"Описание: {product.description}\n"
-                f"Тип: {product.type}\n"
-                f"Материал: {product.material}\n"
-                f"Цена: {product.price}\n",
-                reply_markup=product_details_keyboard(product_id)
-            )
-        else:
-            await message.answer("Ошибка при обновлении материала товара. Попробуйте снова.")
-    
+    await process_field_update(message, state, repo, MATERIAL, message.text)
     await state.clear()
 
 @admin_product_router.message(ProductManagement.price)
@@ -568,71 +507,83 @@ async def process_new_price(message: Message, state: FSMContext, repo: RequestsR
     """
     Обработчик ввода новой цены товара.
     """
-    data = await state.get_data()
-    edit_field = data.get("edit_field")
-    product_id = data.get("product_id")
-    
     try:
-        price = float(message.text)
+        # Удаляем все нечисловые символы кроме точки и запятой
+        price_text = message.text.strip()
+        # Заменяем запятую на точку для поддержки разных форматов
+        price_text = price_text.replace(',', '.')
         
-        if edit_field == "price" and product_id:
-            # Обновляем цену товара
-            success = await repo.products.update_product_field(product_id, "price", price)
+        # Проверяем, что в тексте есть только цифры и точка
+        if not all(c.isdigit() or c == '.' for c in price_text):
+            raise ValueError("Цена должна содержать только цифры и точку")
             
-            if success:
-                product = await repo.products.get_product_by_id(product_id)
-                await message.answer(f"Цена товара успешно изменена на: {price}")
-                
-                # Возвращаемся к просмотру товара
-                await message.answer(
-                    f"📦 Информация о товаре:\n\n"
-                    f"ID: {product.product_id}\n"
-                    f"Название: {product.name}\n"
-                    f"Описание: {product.description}\n"
-                    f"Тип: {product.type}\n"
-                    f"Материал: {product.material}\n"
-                    f"Цена: {product.price}\n",
-                    reply_markup=product_details_keyboard(product_id)
-                )
-            else:
-                await message.answer("Ошибка при обновлении цены товара. Попробуйте снова.")
+        # Если точек больше одной - некорректный формат
+        if price_text.count('.') > 1:
+            raise ValueError("Некорректный формат числа")
+            
+        price = float(price_text)
         
+        # Проверка на отрицательное или нулевое значение
+        if price <= 0:
+            await message.answer("Цена должна быть положительным числом. Попробуйте еще раз.")
+            return
+            
+        # Проверка на слишком большую цену
+        if price > 1000000:  # Примерное ограничение для реалистичной цены
+            await message.answer("Введенная цена слишком большая. Пожалуйста, проверьте значение.")
+            return
+            
+        # Обновляем цену товара
+        await process_field_update(message, state, repo, PRICE, price)
         await state.clear()
-    except ValueError:
-        await message.answer("Введите корректное числовое значение для цены.")
+    except ValueError as e:
+        error_message = str(e) if str(e) != "could not convert string to float: " else "Введите корректное числовое значение для цены."
+        await message.answer(error_message)
 
 @admin_product_router.message(ProductManagement.image_url, F.photo)
 async def process_new_image(message: Message, state: FSMContext, repo: RequestsRepo):
     """
     Обработчик загрузки нового изображения товара.
     """
-    data = await state.get_data()
-    edit_field = data.get("edit_field")
-    product_id = data.get("product_id")
+    # Берем идентификатор фото с лучшим разрешением
+    photo_id = message.photo[-1].file_id
     
-    if edit_field == "image_url" and product_id:
-        # Берем идентификатор фото с лучшим разрешением
-        photo_id = message.photo[-1].file_id
-        
-        # Обновляем изображение товара
-        success = await repo.products.update_product_field(product_id, "image_url", photo_id)
+    # Используем универсальную функцию обновления, но с особой обработкой для отображения фото
+    data = await state.get_data()
+    edit_field = data.get(EDIT_FIELD)
+    product_id = data.get(PRODUCT_ID)
+    
+    if edit_field == IMAGE_URL and product_id:
+        # Обновляем изображение товара напрямую, т.к. нужна специальная обработка для ответа с фото
+        success = await repo.products.update_product_field(product_id, IMAGE_URL, photo_id)
         
         if success:
             product = await repo.products.get_product_by_id(product_id)
             await message.answer("Изображение товара успешно обновлено.")
             
-            # Возвращаемся к просмотру товара
-            await message.answer_photo(
-                photo=product.image_url,
-                caption=f"📦 Информация о товаре:\n\n"
-                        f"ID: {product.product_id}\n"
-                        f"Название: {product.name}\n"
-                        f"Описание: {product.description}\n"
-                        f"Тип: {product.type}\n"
-                        f"Материал: {product.material}\n"
-                        f"Цена: {product.price}\n",
-                reply_markup=product_details_keyboard(product_id)
-            )
+            # Форматируем информацию о товаре
+            product_info = format_product_info(product)
+            
+            # Возвращаемся к просмотру товара с фото
+            image_url = getattr(product, 'image_url', None)
+            if image_url:
+                try:
+                    await message.answer_photo(
+                        photo=image_url,
+                        caption=product_info,
+                        reply_markup=product_details_keyboard(product_id)
+                    )
+                except Exception as e:
+                    logging.error(f"Error sending product photo: {e}")
+                    await message.answer(
+                        product_info,
+                        reply_markup=product_details_keyboard(product_id)
+                    )
+            else:
+                await message.answer(
+                    product_info,
+                    reply_markup=product_details_keyboard(product_id)
+                )
         else:
             await message.answer("Ошибка при обновлении изображения товара. Попробуйте снова.")
     
@@ -644,53 +595,82 @@ async def start_add_product(callback: CallbackQuery, state: FSMContext):
     Начало добавления нового товара.
     """
     logging.info(f"Пользователь {callback.from_user.id} начал добавление товара.")
-    await state.update_data(previous_state=None)  # Сбрасываем предыдущее состояние
-    await callback.message.edit_text("Введите название товара", reply_markup=back_button_keyboard())
+    await state.update_data({PREVIOUS_STATE: None})  # Сбрасываем предыдущее состояние
+    await callback.message.edit_text("Введите название товара:", reply_markup=back_button_keyboard())
     await state.set_state(ProductManagement.name)
+
+# Функция для общего процесса создания товара
+async def process_product_creation(message: Message, state: FSMContext, 
+                                   current_state: str, next_state: str, 
+                                   field_name: str, prompt_text: str):
+    """
+    Обрабатывает ввод данных при создании товара.
+    
+    Args:
+        message: Telegram-сообщение пользователя
+        state: Состояние FSM
+        current_state: Текущее состояние FSM
+        next_state: Следующее состояние FSM
+        field_name: Имя поля для сохранения
+        prompt_text: Текст запроса следующего поля
+    """
+    logging.info(f"Пользователь {message.from_user.id} ввёл {field_name}: {message.text}")
+    
+    # Сохраняем текущее состояние и введенное значение
+    await state.update_data({
+        PREVIOUS_STATE: current_state,
+        field_name: message.text
+    })
+    
+    # Запрашиваем следующее поле
+    await message.answer(prompt_text, reply_markup=back_button_keyboard())
+    
+    # Переходим к следующему состоянию
+    await state.set_state(next_state)
 
 @admin_product_router.message(ProductManagement.name)
 async def set_product_name(message: Message, state: FSMContext):
     """
     Установка имени товара.
     """
-    logging.info(f"Пользователь {message.from_user.id} ввёл имя товара: {message.text}")
-    await state.update_data(previous_state=ProductManagement.name)  # Сохраняем текущее состояние
-    await state.update_data(name=message.text)
-    await message.answer("Введите описание товара", reply_markup=back_button_keyboard())
-    await state.set_state(ProductManagement.description)
+    await process_product_creation(
+        message, state,
+        ProductManagement.name, ProductManagement.description,
+        NAME, "Введите описание товара:"
+    )
 
 @admin_product_router.message(ProductManagement.description)
 async def set_product_description(message: Message, state: FSMContext):
     """
     Установка описания товара.
     """
-    logging.info(f"Пользователь {message.from_user.id} ввёл описание товара: {message.text}")
-    await state.update_data(previous_state=ProductManagement.description)  # Сохраняем текущее состояние
-    await state.update_data(description=message.text)
-    await message.answer("Введите тип товара (например, 'дверь', 'аксессуар')", reply_markup=back_button_keyboard())
-    await state.set_state(ProductManagement.type)
+    await process_product_creation(
+        message, state,
+        ProductManagement.description, ProductManagement.type,
+        DESCRIPTION, "Введите тип товара (например, 'дверь', 'аксессуар'):"
+    )
 
 @admin_product_router.message(ProductManagement.type)
 async def set_product_type(message: Message, state: FSMContext):
     """
     Установка типа товара.
     """
-    logging.info(f"Пользователь {message.from_user.id} ввёл тип товара: {message.text}")
-    await state.update_data(previous_state=ProductManagement.type)  # Сохраняем текущее состояние
-    await state.update_data(type=message.text)
-    await message.answer("Введите материал товара", reply_markup=back_button_keyboard())
-    await state.set_state(ProductManagement.material)
+    await process_product_creation(
+        message, state,
+        ProductManagement.type, ProductManagement.material,
+        TYPE, "Введите материал товара:"
+    )
 
 @admin_product_router.message(ProductManagement.material)
 async def set_product_material(message: Message, state: FSMContext):
     """
     Установка материала товара.
     """
-    logging.info(f"Пользователь {message.from_user.id} ввёл материал товара: {message.text}")
-    await state.update_data(previous_state=ProductManagement.material)  # Сохраняем текущее состояние
-    await state.update_data(material=message.text)
-    await message.answer("Введите цену товара", reply_markup=back_button_keyboard())
-    await state.set_state(ProductManagement.price)
+    await process_product_creation(
+        message, state,
+        ProductManagement.material, ProductManagement.price,
+        MATERIAL, "Введите цену товара:"
+    )
 
 @admin_product_router.message(ProductManagement.price)
 async def set_product_price(message: Message, state: FSMContext):
@@ -700,106 +680,58 @@ async def set_product_price(message: Message, state: FSMContext):
     try:
         price = float(message.text)
         logging.info(f"Пользователь {message.from_user.id} ввёл цену товара: {price}")
-        await state.update_data(previous_state=ProductManagement.price)  # Сохраняем текущее состояние
-        await state.update_data(price=price)
+        
+        # Сохраняем текущее состояние и введенное значение
+        await state.update_data({
+            PREVIOUS_STATE: ProductManagement.price,
+            PRICE: price
+        })
+        
+        # Запрашиваем фото товара
+        await message.answer("Прикрепите фото товара:", reply_markup=back_button_keyboard())
+        await state.set_state(ProductManagement.image_url)
     except ValueError:
         await message.answer("Цена должна быть числом. Попробуйте ещё раз.")
-        return
-
-    await message.answer("Прикрепите фото товара", reply_markup=back_button_keyboard())
-    await state.set_state(ProductManagement.image_url)
 
 @admin_product_router.message(ProductManagement.image_url, F.photo)
-async def set_product_image(message: Message, state: FSMContext):
+async def set_product_image(message: Message, state: FSMContext, repo: RequestsRepo):
     """
-    Подготовка к подтверждению добавления товара.
+    Завершение добавления товара.
     """
     logging.info(f"Пользователь {message.from_user.id} прикрепил фото товара.")
-    await state.update_data(previous_state=ProductManagement.image_url)  # Сохраняем текущее состояние
-    await state.update_data(image_url=message.photo[-1].file_id)
+    
+    # Получаем идентификатор фото с лучшим разрешением
+    photo_id = message.photo[-1].file_id
+    await state.update_data({IMAGE_URL: photo_id})
+    
+    # Получаем все данные о товаре
     data = await state.get_data()
 
-    # Формируем сообщение для подтверждения данных
-    confirm_text = (
-        f"📦 Проверьте данные нового товара:\n\n"
-        f"Название: {data['name']}\n"
-        f"Описание: {data['description']}\n"
-        f"Тип: {data['type']}\n"
-        f"Материал: {data['material']}\n"
-        f"Цена: {data['price']}\n"
-    )
-
-    # Создаем клавиатуру для подтверждения
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Да, всё верно", callback_data="confirm_add_product")
-    builder.button(text="❌ Нет, создать заново", callback_data="cancel_add_product")
-    builder.adjust(1)  # По одной кнопке в строке
-    
-    # Отправляем фото с информацией и запросом подтверждения
-    await message.answer_photo(
-        photo=data['image_url'],
-        caption=confirm_text,
-        reply_markup=builder.as_markup()
-    )
-    
-    await state.set_state(ProductManagement.confirm)
-
-@admin_product_router.callback_query(F.data == "confirm_add_product", ProductManagement.confirm)
-async def confirm_add_product(callback: CallbackQuery, state: FSMContext, repo: RequestsRepo):
-    """
-    Подтверждение и сохранение товара в БД.
-    """
-    data = await state.get_data()
-    
-    # Формируем данные для сохранения в БД
+    # Создаем словарь с данными товара
     product_data = {
-        "name": data['name'],
-        "description": data['description'],
-        "type": data['type'],
-        "material": data['material'],
-        "price": data['price'],
-        "image_url": data['image_url']
+        NAME: data.get(NAME, ""),
+        DESCRIPTION: data.get(DESCRIPTION, ""),
+        TYPE: data.get(TYPE, ""),
+        MATERIAL: data.get(MATERIAL, ""),
+        PRICE: data.get(PRICE, 0),
+        IMAGE_URL: photo_id
     }
     
-    # Сохраняем товар в БД
     try:
+        # Сохраняем товар в БД
         new_product = await repo.products.create_product(product_data)
         logging.info(f"Создан новый товар с ID: {new_product.product_id}")
-        
-        await callback.message.edit_caption(
-            caption=f"✅ Товар успешно добавлен!\n\n"
-                   f"ID: {new_product.product_id}\n"
-                   f"Название: {new_product.name}\n"
-                   f"Тип: {new_product.type}\n"
-                   f"Цена: {new_product.price}"
-        )
-        
-        # Предлагаем дальнейшие действия
-        await callback.message.answer(
-            "Выберите дальнейшее действие:",
-            reply_markup=product_management_keyboard()
-        )
+
+        # Формируем сообщение о добавлении товара
+        response_text = f"Товар успешно добавлен:\n\n{format_product_info(new_product)}"
+        await message.answer(response_text)
     except Exception as e:
-        logging.error(f"Ошибка при добавлении товара: {e}")
-        await callback.message.edit_caption(
-            caption="❌ Произошла ошибка при сохранении товара. Попробуйте снова."
-        )
+        logging.error(f"Ошибка при создании товара: {e}")
+        await message.answer(f"Произошла ошибка при сохранении товара. Попробуйте снова.")
     
+    # Очищаем состояние
     await state.clear()
 
-@admin_product_router.callback_query(F.data == "cancel_add_product", ProductManagement.confirm)
-async def cancel_add_product(callback: CallbackQuery, state: FSMContext):
-    """
-    Отмена добавления товара и начало заново.
-    """
-    await callback.message.delete()
-    await callback.message.answer("Добавление товара отменено. Начнем заново.")
-    
-    # Возвращаемся к началу добавления товара
-    await callback.message.answer("Введите название товара", reply_markup=back_button_keyboard())
-    await state.clear()
-    await state.set_state(ProductManagement.name)
 
 @admin_product_router.callback_query(F.data == "go_back")
 async def go_back(callback: CallbackQuery, state: FSMContext):
@@ -808,91 +740,40 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
     """
     logging.info(f"Пользователь {callback.from_user.id} нажал 'Назад'.")
     data = await state.get_data()
-    previous_state = data.get("previous_state")
+    previous_state = data.get(PREVIOUS_STATE)
 
     if not previous_state:
         # Если предыдущего состояния нет, возвращаем в меню управления товарами
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-            
-        await callback.message.answer(
+        await callback.message.edit_text(
             "Выберите действие с товарами:",
             reply_markup=product_management_keyboard()
         )
         await state.clear()
         return
 
+    # Словарь соответствия состояний и запросов
+    state_prompts = {
+        ProductManagement.name: "Введите название товара:",
+        ProductManagement.description: "Введите описание товара:",
+        ProductManagement.type: "Введите тип товара (например, 'дверь', 'аксессуар'):",
+        ProductManagement.material: "Введите материал товара:",
+        ProductManagement.price: "Введите цену товара:",
+        ProductManagement.image_url: "Прикрепите фото товара:"
+    }
+    
     # Возвращаемся к предыдущему состоянию
     await state.set_state(previous_state)
-
-    # Отображаем соответствующее сообщение для предыдущего состояния с сохраненными данными
-    if previous_state == ProductManagement.name:
-        prev_value = data.get('name', '')
-        if prev_value:
-            prompt = f"Введите название товара\n\nТекущее значение: {prev_value}"
-        else:
-            prompt = "Введите название товара"
-            
-        try:
-            await callback.message.edit_text(prompt, reply_markup=back_button_keyboard())
-        except Exception:
-            await callback.message.answer(prompt, reply_markup=back_button_keyboard())
-            
-    elif previous_state == ProductManagement.description:
-        prev_value = data.get('description', '')
-        if prev_value:
-            prompt = f"Введите описание товара\n\nТекущее значение: {prev_value}"
-        else:
-            prompt = "Введите описание товара"
-            
-        try:
-            await callback.message.edit_text(prompt, reply_markup=back_button_keyboard())
-        except Exception:
-            await callback.message.answer(prompt, reply_markup=back_button_keyboard())
-            
-    elif previous_state == ProductManagement.type:
-        prev_value = data.get('type', '')
-        if prev_value:
-            prompt = f"Введите тип товара (например, 'дверь', 'аксессуар')\n\nТекущее значение: {prev_value}"
-        else:
-            prompt = "Введите тип товара (например, 'дверь', 'аксессуар')"
-            
-        try:
-            await callback.message.edit_text(prompt, reply_markup=back_button_keyboard())
-        except Exception:
-            await callback.message.answer(prompt, reply_markup=back_button_keyboard())
-            
-    elif previous_state == ProductManagement.material:
-        prev_value = data.get('material', '')
-        if prev_value:
-            prompt = f"Введите материал товара\n\nТекущее значение: {prev_value}"
-        else:
-            prompt = "Введите материал товара"
-            
-        try:
-            await callback.message.edit_text(prompt, reply_markup=back_button_keyboard())
-        except Exception:
-            await callback.message.answer(prompt, reply_markup=back_button_keyboard())
-            
-    elif previous_state == ProductManagement.price:
-        prev_value = data.get('price', '')
-        if prev_value:
-            prompt = f"Введите цену товара\n\nТекущее значение: {prev_value}"
-        else:
-            prompt = "Введите цену товара"
-            
-        try:
-            await callback.message.edit_text(prompt, reply_markup=back_button_keyboard())
-        except Exception:
-            await callback.message.answer(prompt, reply_markup=back_button_keyboard())
-            
-    elif previous_state == ProductManagement.image_url:
-        # Если возвращаемся к загрузке фото, просто предлагаем загрузить фото снова
-        try:
-            await callback.message.edit_text("Прикрепите фото товара", reply_markup=back_button_keyboard())
-        except Exception:
-            await callback.message.answer("Прикрепите фото товара", reply_markup=back_button_keyboard())
-
+    
+    # Получаем соответствующий запрос для состояния
+    prompt = state_prompts.get(previous_state, "Введите данные:")
+    
+    # Показываем пользователю текущее значение поля, если оно есть в данных
+    field_name = str(previous_state).split(":")[-1]  # Извлекаем имя поля из состояния
+    current_value = data.get(field_name)
+    
+    if current_value:
+        prompt = f"{prompt}\n\nТекущее значение: {current_value}"
+    
+    # Отображаем сообщение
+    await callback.message.edit_text(prompt, reply_markup=back_button_keyboard())
     logging.info(f"Возвращение к состоянию: {previous_state}")

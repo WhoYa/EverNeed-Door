@@ -1,0 +1,56 @@
+puml
+@startuml Request Processing Sequence
+!theme plain
+
+participant "Telegram" as TG
+participant "aiogram Dispatcher" as DISP
+participant "ConfigMiddleware" as CM
+participant "DatabaseMiddleware" as DM
+participant "RequestsRepo" as REPO
+participant "Handler" as H
+participant "Database" as DB
+
+TG -> DISP: Incoming Update
+activate DISP
+
+DISP -> CM: Process Request
+activate CM
+CM -> CM: Inject Config
+CM -> DM: Continue Processing
+deactivate CM
+
+activate DM
+DM -> DM: Extract User Info
+DM -> REPO: Create Repository
+activate REPO
+
+DM -> REPO: Get or Create User
+REPO -> DB: Query/Insert User
+activate DB
+DB --> REPO: User Data
+deactivate DB
+REPO --> DM: User Object
+deactivate REPO
+
+DM -> DM: Inject Session, Repo, User
+DM -> H: Execute Handler
+deactivate DM
+
+activate H
+H -> REPO: Business Operations
+activate REPO
+REPO -> DB: CRUD Operations
+activate DB
+DB --> REPO: Query Results
+deactivate DB
+REPO --> H: Processed Data
+deactivate REPO
+
+H -> H: Generate Response
+H -> TG: Send Response
+deactivate H
+
+DISP -> DISP: Cleanup
+deactivate DISP
+
+@enduml

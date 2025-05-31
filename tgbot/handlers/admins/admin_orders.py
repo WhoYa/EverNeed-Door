@@ -76,32 +76,49 @@ def order_details_keyboard(order_id: int) -> InlineKeyboardMarkup:
 @admin_orders_router.callback_query(F.data == "view_orders")
 async def view_orders_handler(callback: CallbackQuery, repo: RequestsRepo):
     """Показать первую страницу со списком заказов."""
-    # Просто отправляем новое сообщение вместо редактирования существующего
-    # Это самый надежный способ избежать ошибки "message is not modified"
-    
-    orders = await repo.orders.get_all_orders()
-    
-    if not orders:
-        # Даже здесь не редактируем, а отправляем новое сообщение
-        await callback.message.delete()
-        await callback.message.answer(
-            "На данный момент заказы отсутствуют.",
-            reply_markup=main_menu_keyboard()
-        )
-        return
-    
-    # Формируем текст 
-    text_lines = ["Список заказов (стр. 1):\n"]
-    for o in orders[:5]:  # только первые 5 для примера
-        text_lines.append(f"- #{o.order_id}, пользователь: {o.user_id}, статус: {o.status}")
-    text_output = "\n".join(text_lines)
-    
-    # Создаём клавиатуру для страницы 1
-    keyboard = order_list_keyboard_paginated(orders, page=1, page_size=5)
-    
-    # Отправляем новое сообщение и удаляем старое
-    await callback.message.delete()
-    await callback.message.answer(text_output, reply_markup=keyboard)
+    try:
+        orders = await repo.orders.get_all_orders()
+        
+        if not orders:
+            # Даже здесь не редактируем, а отправляем новое сообщение
+            try:
+                await callback.message.delete()
+            except Exception as e:
+                logging.error(f"Error deleting message: {e}")
+                
+            await callback.message.answer(
+                "На данный момент заказы отсутствуют.",
+                reply_markup=main_menu_keyboard()
+            )
+            await callback.answer()
+            return
+        
+        # Формируем текст 
+        text_lines = ["Список заказов (стр. 1):\n"]
+        for o in orders[:5]:  # только первые 5 для примера
+            text_lines.append(f"- #{o.order_id}, пользователь: {o.user_id}, статус: {o.status}")
+        text_output = "\n".join(text_lines)
+        
+        # Создаём клавиатуру для страницы 1
+        keyboard = order_list_keyboard_paginated(orders, page=1, page_size=5)
+        
+        try:
+            # Сначала попробуем отредактировать текущее сообщение
+            await callback.message.edit_text(text_output, reply_markup=keyboard)
+            await callback.answer()
+        except Exception as e:
+            logging.error(f"Error editing message: {e}")
+            # Если не получается отредактировать, отправляем новое сообщение
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+                
+            await callback.message.answer(text_output, reply_markup=keyboard)
+            await callback.answer()
+    except Exception as e:
+        logging.error(f"Error in view_orders_handler: {e}")
+        await callback.answer("Произошла ошибка при загрузке заказов.", show_alert=True)
 
 # Обработчик пагинации для списка заказов
 @admin_orders_router.callback_query(F.data.regexp(r"^view_orders_page_(\d+)$"))
@@ -174,7 +191,19 @@ async def view_order_details(callback: CallbackQuery, repo: RequestsRepo):
         f"Обновлен: {order.updated_at.strftime('%d.%m.%Y %H:%M')}\n"
     )
     
-    await callback.message.edit_text(
-        text,
-        reply_markup=order_details_keyboard(order_id)
-    )
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=order_details_keyboard(order_id)
+        )
+        await callback.answer()
+    except Exception as e:
+        logging.error(f"Error editing message for order details: {e}")
+        await callback.message.answer(
+            text,
+            reply_markup=order_details_keyboard(order_id)
+        )
+        await callback.answer()
+        
+# Убираем отдельный обработчик back_to_main_menu,
+# теперь этот функционал реализован централизованно в admin.py

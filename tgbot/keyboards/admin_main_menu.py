@@ -10,13 +10,38 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             callback_data="manage_products"
         ),
         InlineKeyboardButton(
-            text="🛒 Просмотр заказов",
-            callback_data="view_orders"
+            text="🏷️ Управление акциями",
+            callback_data="manage_promotions"
         ),
         InlineKeyboardButton(
-            text="🔔 Управление уведомлениями",
-            callback_data="manage_notifications"
+            text="📊 Статистика и логи",
+            callback_data="view_statistics"
+        ),
+        InlineKeyboardButton(
+            text="🔔 Управление подписками",
+            callback_data="manage_subscriptions"
+        ),
+        InlineKeyboardButton(
+            text="👨‍💼 Управление администраторами",
+            callback_data="manage_admins"
+        ),
+        InlineKeyboardButton(
+            text="🛒 Просмотр заказов",
+            callback_data="view_orders"
         )
     )
     builder.adjust(1)  # Каждый пункт в отдельной строке
+    return builder.as_markup()
+
+def admin_back_button(callback_data: str = "admin_main") -> InlineKeyboardMarkup:
+    """
+    Простая кнопка "Назад" для админ-меню.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data=callback_data
+        )
+    )
     return builder.as_markup()

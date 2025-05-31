@@ -19,6 +19,15 @@ def favorites_keyboard(favorites) -> InlineKeyboardMarkup:
             callback_data=FavoriteActionCallback(action="remove", product_id=favorite.product_id)
         )
     builder.adjust(2)  # Две кнопки в строке: Просмотр и Удаление
+    
+    # Добавляем кнопку возврата
+    builder.row(
+        InlineKeyboardButton(
+            text="🔙 Назад в главное меню",
+            callback_data="main_menu"
+        )
+    )
+    
     return builder.as_markup()
 
 def empty_favorites_keyboard() -> InlineKeyboardMarkup:

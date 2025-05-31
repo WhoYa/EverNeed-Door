@@ -13,10 +13,6 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         callback_data="catalog"
     )
     builder.button(
-        text="🛒 Мои заказы",
-        callback_data="my_orders"
-    )
-    builder.button(
         text="⭐ Избранное",
         callback_data="view_favorites"
     )

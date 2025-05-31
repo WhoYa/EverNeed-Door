@@ -6,7 +6,8 @@ from sqlalchemy.future import select
 from infrastructure.database.models.feedback import Feedback
 from infrastructure.database.repositories.base import BaseRepo
 
-class FeedbackRepo(BaseRepo):
+class FeedbackRepo(BaseRepo[Feedback]):
+    model = Feedback
     async def create_feedback(self, user_id: int, message: str) -> Feedback:
         """
         Создает новый отзыв от пользователя.

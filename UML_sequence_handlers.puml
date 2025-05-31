@@ -1,0 +1,43 @@
+@startuml EverDoor Handler Chain Sequence
+!theme plain
+
+title EverDoor Bot - Цепочка вызовов хендлеров
+
+participant "Telegram API" as TG
+participant "Dispatcher" as DISP
+participant "ConfigMiddleware" as CM
+participant "DatabaseMiddleware" as DM
+participant "AdminFilter" as AF
+participant "Handler" as H
+
+TG -> DISP: Update (Message/Callback)
+activate DISP
+
+DISP -> CM: __call__(event, data)
+activate CM
+CM -> CM: load_config(".env")
+CM -> DM: handler(event, data + config)
+deactivate CM
+
+activate DM
+DM -> DM: create session & repo
+DM -> AF: handler(event, data + repo)
+deactivate DM
+
+activate AF
+AF -> AF: check admin rights
+AF -> H: handler(event, data)
+deactivate AF
+
+activate H
+H -> H: process request
+H -> TG: response
+deactivate H
+
+deactivate DISP
+
+note over TG, H
+Цепочка: Telegram → Dispatcher → ConfigMiddleware → DatabaseMiddleware → AdminFilter → Handler → Response
+end note
+
+@enduml

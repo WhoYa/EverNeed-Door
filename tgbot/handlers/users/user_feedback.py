@@ -51,7 +51,7 @@ async def process_feedback(message: Message, state: FSMContext, repo: FeedbackRe
 
     try:
         # Сохраняем отзыв в базе данных
-        feedback = await repo.create_feedback(user_id=user_id, message=feedback_text)
+        feedback = await repo.feedback.create_feedback(user_id=user_id, message=feedback_text)
         logger.info(f"Пользователь {user_id} отправил отзыв (ID: {feedback.id}).")
     
         await message.answer("✅ Спасибо за ваш отзыв!")
@@ -61,9 +61,7 @@ async def process_feedback(message: Message, state: FSMContext, repo: FeedbackRe
     finally:
         await state.clear()
 
-@user_feedback_router.callback_query(
-    (F.data == "cancel_feedback") & (F.state == FeedbackStates.waiting_for_feedback)
-)
+@user_feedback_router.callback_query(F.data == "cancel_feedback")
 async def cancel_feedback(callback: CallbackQuery, state: FSMContext):
     """
     Отмена процесса обратной связи.
